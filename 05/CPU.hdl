@@ -40,25 +40,36 @@ CHIP CPU {
 
     PARTS:
     // Put your code here:
-    DMux(in=true, sel=instruction[15], a=instA, b=instC); // A-instruction or C
 
-    // set A register by A-instruction or comp with dest A
-    Or(a=instA, b=instruction[5], out=setAreg);
-    Mux16(a=aluOutMux16in, b=instruction, sel=instA, out=mux16outRegAin);
-    ARegister(in=mux16outRegAin, load=setAreg, out=regAoutMux16in, out=regAoutPCin, out=addressM);
+    // A- or C-instruction
+    DMux(in=true, sel=instruction[15], a=isA, b=isC);
 
-    // set D register by comp with dest D
-    And(a=instC, b=instruction[4], out=setDreg);
-    DRegister(in=aluOutRegDin, load=setDreg, out=regDoutAluin);
+    // A register, if A-instruction or C-instruction with A dest.
+    Or(a=isA, b=instruction[5], out=setAreg);
+    Mux16(a=aluout, b=instruction, sel=isA, out=regAin);
+    ARegister(in=regAin, load=setAreg, out=regAout, out[0..14]=addressM);
 
-    // feed alu from D register and A or RAM[A]
-    Mux16(a=regAoutMux16in, b=inM, sel=, out=mux16outAluin);
-    ALU(x=regDoutAluin, y=mux16outAluin, zx=instruction[11], nx=[instruction[10], zy=instruction[9], ny=instruction[8], f=instruction[7], no=instruction[6], out=outM, zr=,outzr ng=outng, out=aluOutMux16in, out=aluOutRegDin);
+    // D register, if C-instruction with D dest
+    And(a=isC, b=instruction[4], out=setDreg);
+    DRegister(in=aluout, load=setDreg, out=regDout);
 
-    And()
+    // ALU
+    Mux16(a=regAout, b=inM, sel=instruction[12], out=aluin2);
+    ALU(x=regDout, y=aluin2, zx=instruction[11], nx=instruction[10], zy=instruction[9], ny=instruction[8], f=instruction[7], no=instruction[6], out=outM, zr=isoutZero, ng=isoutNeg, out=aluout);
+
+    // WriteM, if C-instruction widh M dest
+    And(a=isC, b=instruction[3], out=writeM);
     
-    PC(in=regAoutPCin, load=, inc=, reset=reset, out=pc);
-
-
+    // PC, reset if reset else{jump if load=1 else {pc++ if inc else pc}}
+    Or(a=isoutZero, b=isoutNeg, out=isoutnotPos);
+    Not(in=isoutnotPos, out=isOutPos);
+    And(a=isOutPos, b=instruction[0], out=jgt);
+    And(a=isoutZero, b=instruction[1], out=jeq);
+    And(a=isoutNeg, b=instruction[2], out=jlt);
+    Or(a=jgt, b=jeq, out=jgtOrjeq); // covers jgt, jeq, jge
+    Or(a=jgtOrjeq, b=jlt, out=jgtOrjeqOrjlt); // covers jgt, jeq, jge, jlt, null, jne, jle, jmp
+    And(a=isC, b=jgtOrjeqOrjlt, out=isjump);
+    Not(in=isjump, out=isinc);
+    PC(in=regAout, load=isjump, inc=isinc, reset=reset, out[0..14]=pc);
 
 }

@@ -28,10 +28,10 @@ CHIP Memory {
 
     PARTS:
     // Put your code here:
-    DMux4Way(in=load, sel=address[13..14], a=ram1, b=ram2, c=scr, d=kbd);
-    Or(a=ram1, b=ram2, out=ram);
-    RAM16K(in=in, load=ram, address=address[0..13], out=ramout1);
-    Screen(in=in, load=scr, address=address[0..12], out=scrout);
+    DMux4Way(in=load, sel=address[13..14], a=isram1, b=isram2, c=isscr, d=iskbd);
+    Or(a=isram1, b=isram2, out=isram);
+    RAM16K(in=in, load=isram, address=address[0..13], out=ramout);
+    Screen(in=in, load=isscr, address=address[0..12], out=scrout);
     Keyboard(out=kbdout);
-    Mux4Way16(a=ramout1, b=ramout1, c=scrout, d=kbdout, sel=address[13..14], out=out);
+    Mux4Way16(a=ramout, b=ramout, c=scrout, d=kbdout, sel=address[13..14], out=out);
 }
