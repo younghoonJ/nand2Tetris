@@ -127,7 +127,7 @@ class JackTokenizer:
             if " " in s:
                 for i in s.split(" "):
                     self.make_token(i)
-            elif s in "0123456789":
+            elif s[0] in "0123456789":
                 self.tokens.append((T_CONST, int(s)))
             else:
                 self.tokens.append((T_IDENTIFIER, s))
