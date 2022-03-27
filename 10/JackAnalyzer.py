@@ -1,3 +1,7 @@
+import argparse
+import os
+from pathlib import Path
+
 T_KEYWARD = 0
 T_SYMBOL = 1
 T_IDENTIFIER = 2
@@ -7,14 +11,14 @@ T_EOF = 5
 
 _kwd_else = (
     "class",
-    "field",
-    "static",
     "var",
     "int",
     "char",
     "boolean",
     "void",
 )
+
+_kwd_classvar = ("static", "field")
 
 _kwd_constant = ("true", "false", "null", "this")
 
@@ -31,9 +35,9 @@ _kwd_stmts = (
     "return",
 )
 
-_keyword = _kwd_else + _kwd_constant + _kwd_subroutines + _kwd_stmts
+_keyword = _kwd_else + _kwd_classvar + _kwd_constant + _kwd_subroutines + _kwd_stmts
 
-_symbol = {
+_symbol = (
     "{",
     "}",
     "(",
@@ -42,18 +46,23 @@ _symbol = {
     "]",
     ".",
     ",",
-    ";",
-    "+",
-    "-",
-    "*",
-    "/",
-    "&",
-    "|",
-    "<",
-    ">",
-    "=",
-    "~",
-}
+    ";",)
+
+_op = ("+",
+       "-",
+       "*",
+       "/",
+       "&",
+       "|",
+       "<",
+       ">",
+       "=",
+       "~",
+       "&lt;",
+       "&gt;",
+       "&amp;",
+       )
+_symbol = _symbol + _op
 
 
 def write_token(tk_type, tk, w):
@@ -68,7 +77,7 @@ def write_token(tk_type, tk, w):
     elif tk_type == T_STRING_CONST:
         w.write(f"<stringConstant> {tk} </stringConstant>\n")
     else:
-        raise Exception
+        raise Exception(tk_type, tk)
 
 
 class JackTokenizer:
@@ -222,6 +231,13 @@ def compile_kwd(tk, tk_type, f, w):
         tk_type, tk = process(";", tk, tk_type, f, w)
         w.write("</varDec>\n")
         return tk_type, tk
+    elif tk in _kwd_classvar:
+        w.write("<classVarDec>\n")
+        tk_type, tk = process(tk, tk, tk_type, f, w)
+        tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, ';', f, w)
+        tk_type, tk = process(";", tk, tk_type, f, w)
+        w.write("</classVarDec>\n")
+        return tk_type, tk
     elif tk in _kwd_stmts:
         return compile_stmts(tk, tk_type, f, w)
     else:
@@ -246,6 +262,7 @@ def compile_let_stmt(tk, tk_type, f, w):
     tk_type, tk = process("let", tk, tk_type, f, w)
     tk_type, tk = process(tk, tk, tk_type, f, w)  # varname
     if tk == "[" and tk_type == T_SYMBOL:
+        tk_type, tk = process("[", tk, tk_type, f, w)
         tk_type, tk = compile_exps(tk, tk_type, f, w)
         tk_type, tk = process("]", tk, tk_type, f, w)
     tk_type, tk = process("=", tk, tk_type, f, w)
@@ -282,7 +299,9 @@ def compile_while_stmt(tk, tk_type, f, w):
     tk_type, tk = compile_exps(tk, tk_type, f, w)
     tk_type, tk = process(")", tk, tk_type, f, w)
     tk_type, tk = process("{", tk, tk_type, f, w)
+    w.write("<statements>\n")
     tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
+    w.write("</statements>\n")
     tk_type, tk = process("}", tk, tk_type, f, w)
     w.write("</whileStatement>\n")
     return tk_type, tk
@@ -291,11 +310,9 @@ def compile_while_stmt(tk, tk_type, f, w):
 def compile_exps(tk, tk_type, f, w):
     w.write("<expression>\n")
     tk_type, tk = compile_term(tk, tk_type, f, w)
-    if tk == "(" and tk_type == T_SYMBOL:
-        tk_type, tk = process("(", tk, tk_type, f, w)
-        tk_type, tk = process(tk, tk, tk_type, f, w)  # op
+    while tk in _op and tk_type == T_SYMBOL:
+        tk_type, tk = process(tk, tk, tk_type, f, w)
         tk_type, tk = compile_term(tk, tk_type, f, w)
-        tk_type, tk = process(")", tk, tk_type, f, w)
     w.write("</expression>\n")
     return tk_type, tk
 
@@ -316,7 +333,7 @@ def compile_subrt_call(tk, tk_type, f, w):
 
 def compile_term(tk, tk_type, f, w):
     w.write("<term>\n")
-    if tk_type in (T_CONST, T_STRING_CONST) + _kwd_constant:
+    if tk_type in (T_CONST, T_STRING_CONST) or tk in _kwd_constant:
         tk_type, tk = process(tk, tk, tk_type, f, w)
     elif tk_type == T_IDENTIFIER:
         tk_type, tk = process(tk, tk, tk_type, f, w)
@@ -338,14 +355,14 @@ def compile_term(tk, tk_type, f, w):
 
 
 def compile_exps_list(tk, tk_type, f, w):
-    w.write("<expressionList>")
+    w.write("<expressionList>\n")
     while True:
         if tk == ")" and tk_type == T_SYMBOL:
             break
         tk_type, tk = compile_exps(tk, tk_type, f, w)
         if tk == "," and tk_type == T_SYMBOL:
             tk_type, tk = process(",", tk, tk_type, f, w)
-    w.write("</expressionList>")
+    w.write("</expressionList>\n")
     return tk_type, tk
 
 
@@ -376,7 +393,8 @@ def compile_class(tk, tk_type, f, w):
     tk_type, tk = process("class", tk, tk_type, f, w)  # class
     tk_type, tk = process(tk, tk, tk_type, f, w)  # main
     tk_type, tk = process("{", tk, tk_type, f, w)  # {
-    tk_type, tk = compile_token(tk, tk_type, f, w)
+    tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
+    # tk_type, tk = compile_token(tk, tk_type, f, w)
     tk_type, tk = process("}", tk, tk_type, f, w)
     w.write("</class>\n")
     return tk_type, tk
@@ -385,14 +403,20 @@ def compile_class(tk, tk_type, f, w):
 def compile_if_stmt(tk, tk_type, f, w):
     w.write("<ifStatement>\n")
     tk_type, tk = process("if", tk, tk_type, f, w)
+    tk_type, tk = process("(", tk, tk_type, f, w)
     tk_type, tk = compile_exps(tk, tk_type, f, w)
     tk_type, tk = process(")", tk, tk_type, f, w)
     tk_type, tk = process("{", tk, tk_type, f, w)
+    w.write("<statements>\n")
     tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
+    w.write("</statements>\n")
     tk_type, tk = process("}", tk, tk_type, f, w)
     if tk == "else" and tk_type == T_KEYWARD:
         tk_type, tk = process("else", tk, tk_type, f, w)
+        tk_type, tk = process("{", tk, tk_type, f, w)
+        w.write("<statements>\n")
         tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
+        w.write("</statements>\n")
         tk_type, tk = process("}", tk, tk_type, f, w)
     w.write("</ifStatement>\n")
     return tk_type, tk
@@ -426,21 +450,29 @@ def parse(open_file, write_file):
     g.close()
 
 
-if __name__ == "__main__":
-    tokenizer = JackTokenizer("ArrayTest/Main.jack", write_file="ArrayTest_MainT.xml")
-    tokenizer.tokenize()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("file_dir")
+    args = parser.parse_args()
+    file_dir = Path(args.file_dir)
 
-    parse("ArrayTest_MainT.xml", write_file="ArrayTest_Main.xml")
-    # tokenizer = JackTokenizer("Square/Main.jack", write_file="Square_MainT.xml")
-    # tokenizer.tokenize()
-    # tokenizer = JackTokenizer("Square/Square.jack", write_file="Square_SquareT.xml")
-    # tokenizer.tokenize()
-    # tokenizer = JackTokenizer("Square/SquareGame.jack", write_file="Square_SquareGameT.xml")
-    # tokenizer.tokenize()
-    #
-    # tokenizer = JackTokenizer("ExpressionLessSquare/Main.jack", write_file="ExpressionLessSquare_MainT.xml")
-    # tokenizer.tokenize()
-    # tokenizer = JackTokenizer("ExpressionLessSquare/Square.jack", write_file="ExpressionLessSquare_SquareT.xml")
-    # tokenizer.tokenize()
-    # tokenizer = JackTokenizer("ExpressionLessSquare/SquareGame.jack", write_file="ExpressionLessSquare_SquareGameT.xml")
-    # tokenizer.tokenize()
+    lst_jack = []
+    if Path.is_dir(file_dir):
+        for p in file_dir.glob("*.jack"):
+            fname = p.parts[-1].split(".")[0]
+            lst_jack.append((p, Path(file_dir, fname + "T.xml"), Path(file_dir, fname + ".xml")))
+    elif os.path.isfile(file_dir) and file_dir.parts[-1].endswith(".jack"):
+        fname = file_dir.parts[-1].split(".")[0]
+        pre = Path(*file_dir.parts[:-1])
+        lst_jack.append((file_dir, Path(pre, fname + "T.xml"), Path(pre, fname + ".xml")))
+    else:
+        raise NotImplementedError
+
+    for jack in lst_jack:
+        tokenizer = JackTokenizer(input_file=jack[0], write_file=jack[1])
+        tokenizer.tokenize()
+        parse(jack[1], jack[2])
+
+
+if __name__ == "__main__":
+    main()
