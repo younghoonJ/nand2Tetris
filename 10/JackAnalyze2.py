@@ -6,7 +6,6 @@ T_STRING_CONST = 4
 T_EOF = 5
 
 _kwd_else = (
-    "Array",
     "class",
     "field",
     "static",
@@ -15,11 +14,9 @@ _kwd_else = (
     "char",
     "boolean",
     "void",
-    "true",
-    "false",
-    "null",
-    "this",
 )
+
+_kwd_constant = ("true", "false", "null", "this")
 
 _kwd_subroutines = ("constructor",
                     "function",
@@ -34,7 +31,7 @@ _kwd_stmts = (
     "return",
 )
 
-_keyword = _kwd_else + _kwd_subroutines + _kwd_stmts
+_keyword = _kwd_else + _kwd_constant + _kwd_subroutines + _kwd_stmts
 
 _symbol = {
     "{",
@@ -72,7 +69,6 @@ def write_token(tk_type, tk, w):
         w.write(f"<stringConstant> {tk} </stringConstant>\n")
     else:
         raise Exception
-    # print(tk_type, tk)
 
 
 class JackTokenizer:
@@ -206,171 +202,225 @@ def advance(f):
         return str2type[tag], content
 
 
-def process(expected: str, tk: str, tk_type: int, w):
+def process(expected: str, tk: str, tk_type: int, f, w):
     if expected == tk:
         write_token(tk_type, tk, w)
+        return advance(f)
     else:
-        raise Exception(tk, tk_type, expected)
+        raise Exception(expected, tk, tk_type)
 
 
-def compile_kwd(kwd, tk_type, f, w):
-    if kwd == "class":
-        compile_class(kwd, tk_type, f, w)
-    elif kwd in _kwd_subroutines:
-        compile_subroutine(kwd, tk_type, f, w)
-    elif kwd == "var":
+def compile_kwd(tk, tk_type, f, w):
+    if tk == "class":
+        return compile_class(tk, tk_type, f, w)
+    elif tk in _kwd_subroutines:
+        return compile_subroutine(tk, tk_type, f, w)
+    elif tk == "var":
         w.write("<varDec>\n")
-        process("var", kwd, tk_type, w)
-        tk_type, sym = compile_until(T_SYMBOL, ';', f, w)
-        process(";", sym, tk_type, w)
+        tk_type, tk = process("var", tk, tk_type, f, w)
+        tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, ';', f, w)
+        tk_type, tk = process(";", tk, tk_type, f, w)
         w.write("</varDec>\n")
-    elif kwd in _kwd_stmts:
-        compile_stmts(kwd, tk_type, f, w)
-    # else:
-    #     raise Exception(kwd)
-
-
-def compile_stmts(kwd, tk_type, f, w):
-    if kwd == "let":
-        compile_let_stmt(kwd, tk_type, f, w)
-    elif kwd == "do":
-        compile_do_stmt(kwd, tk_type, f, w)
-    elif kwd == "while":
-        compile_while_stmt(kwd, tk_type, f, w)
-    elif kwd == "return":
-        compile_return_stmt(kwd, tk_type, f, w)
-
-
-def get_exps(ut_type, until, f):
-    tk_type, content = advance(f)
-    exps = []
-    while content != until or tk_type != ut_type:
-        exps.append((tk_type, content))
-        tk_type, content = advance(f)
-    return tk_type, content, exps
-
-
-def compile_exps(exps, f, w):
-    w.write("<expression>\n")
-    w.write(str(exps) + '\n')
-    w.write("</expression>\n")
-
-
-def compile_let_stmt(kwd, tk_type, f, w):
-    w.write("<letStatement>\n")
-    process("let", kwd, tk_type, w)
-    advance_process(f, w)  # varname
-    tk_type, sym, exps = get_exps(T_SYMBOL, "=", f)
-    if exps:
-        compile_exps(exps, f, w)
-    process("=", sym, tk_type, w)
-    tk_type, sym, exps = get_exps(T_SYMBOL, ";", f)
-    compile_exps(exps, f, w)
-    process(";", sym, tk_type, w)
-    w.write("</letStatement>\n")
-
-
-def compile_do_stmt(kwd, tk_type, f, w):
-    w.write("<doStatement>\n")
-    process("do", kwd, tk_type, w)
-    tk_type, sym = compile_until(T_SYMBOL, "(", f, w)
-    process("(", sym, tk_type, w)
-    w.write("<expressionList>\n")
-
-    tk_type, sym, exps = get_exps(T_SYMBOL, ")", f)
-    compile_exps(exps, f, w)
-
-    w.write("</expressionList>\n")
-    process(")", sym, tk_type, w)
-    advance_process(f, w, ';')
-    w.write("</doStatement>\n")
-
-
-def compile_return_stmt(kwd, tk_type, f, w):
-    w.write("<returnStatement>\n")
-    process("return", kwd, tk_type, w)
-    tk_type, sym, exps = get_exps(T_SYMBOL, ";", f)
-    if exps:
-        compile_exps(exps, f, w)
-    process(";", sym, tk_type, w)
-    w.write("</returnStatement>\n")
-
-
-def compile_while_stmt(kwd, tk_type, f, w):
-    w.write("<whileStatement>\n")
-    tk_type, sym = compile_until(T_SYMBOL, "{", f, w)
-    process("{", sym, tk_type, w)
-    tk_type, sym = compile_until(T_SYMBOL, "}", f, w)
-    process("}", sym, tk_type, w)
-    w.write("</whileStatement>\n")
-
-
-def advance_process(f, w, expected=None):
-    tk_type, content = advance(f)
-    if expected is None:
-        process(content, content, tk_type, w)
+        return tk_type, tk
+    elif tk in _kwd_stmts:
+        return compile_stmts(tk, tk_type, f, w)
     else:
-        process(expected, content, tk_type, w)
+        return process(tk, tk, tk_type, f, w)
 
 
-def compile_subroutine(kwd, tk_type, f, w):
+def compile_stmts(tk, tk_type, f, w):
+    if tk == "let":
+        return compile_let_stmt(tk, tk_type, f, w)
+    elif tk == "do":
+        return compile_do_stmt(tk, tk_type, f, w)
+    elif tk == "while":
+        return compile_while_stmt(tk, tk_type, f, w)
+    elif tk == "return":
+        return compile_return_stmt(tk, tk_type, f, w)
+    elif tk == "if":
+        return compile_if_stmt(tk, tk_type, f, w)
+
+
+def compile_let_stmt(tk, tk_type, f, w):
+    w.write("<letStatement>\n")
+    tk_type, tk = process("let", tk, tk_type, f, w)
+    tk_type, tk = process(tk, tk, tk_type, f, w)  # varname
+    if tk == "[" and tk_type == T_SYMBOL:
+        tk_type, tk = compile_exps(tk, tk_type, f, w)
+        tk_type, tk = process("]", tk, tk_type, f, w)
+    tk_type, tk = process("=", tk, tk_type, f, w)
+    tk_type, tk = compile_exps(tk, tk_type, f, w)
+    tk_type, tk = process(";", tk, tk_type, f, w)
+    w.write("</letStatement>\n")
+    return tk_type, tk
+
+
+def compile_do_stmt(tk, tk_type, f, w):
+    w.write("<doStatement>\n")
+    tk_type, tk = process("do", tk, tk_type, f, w)
+    tk_type, tk = process(tk, tk, tk_type, f, w)
+    tk_type, tk = compile_subrt_call(tk, tk_type, f, w)
+    tk_type, tk = process(";", tk, tk_type, f, w)
+    w.write("</doStatement>\n")
+    return tk_type, tk
+
+
+def compile_return_stmt(tk, tk_type, f, w):
+    w.write("<returnStatement>\n")
+    tk_type, tk = process("return", tk, tk_type, f, w)
+    if tk != ";":
+        tk_type, tk = compile_exps(tk, tk_type, f, w)
+    tk_type, tk = process(";", tk, tk_type, f, w)
+    w.write("</returnStatement>\n")
+    return tk_type, tk
+
+
+def compile_while_stmt(tk, tk_type, f, w):
+    w.write("<whileStatement>\n")
+    tk_type, tk = process("while", tk, tk_type, f, w)
+    tk_type, tk = process("(", tk, tk_type, f, w)
+    tk_type, tk = compile_exps(tk, tk_type, f, w)
+    tk_type, tk = process(")", tk, tk_type, f, w)
+    tk_type, tk = process("{", tk, tk_type, f, w)
+    tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
+    tk_type, tk = process("}", tk, tk_type, f, w)
+    w.write("</whileStatement>\n")
+    return tk_type, tk
+
+
+def compile_exps(tk, tk_type, f, w):
+    w.write("<expression>\n")
+    tk_type, tk = compile_term(tk, tk_type, f, w)
+    if tk == "(" and tk_type == T_SYMBOL:
+        tk_type, tk = process("(", tk, tk_type, f, w)
+        tk_type, tk = process(tk, tk, tk_type, f, w)  # op
+        tk_type, tk = compile_term(tk, tk_type, f, w)
+        tk_type, tk = process(")", tk, tk_type, f, w)
+    w.write("</expression>\n")
+    return tk_type, tk
+
+
+def compile_subrt_call(tk, tk_type, f, w):
+    if tk == "(" and tk_type == T_SYMBOL:
+        tk_type, tk = process("(", tk, tk_type, f, w)
+        tk_type, tk = compile_exps_list(tk, tk_type, f, w)
+        tk_type, tk = process(")", tk, tk_type, f, w)
+        return tk_type, tk
+    elif tk_type == T_SYMBOL and tk == ".":
+        tk_type, tk = process(".", tk, tk_type, f, w)
+        tk_type, tk = process(tk, tk, tk_type, f, w)
+        return compile_subrt_call(tk, tk_type, f, w)
+    else:
+        return tk_type, tk
+
+
+def compile_term(tk, tk_type, f, w):
+    w.write("<term>\n")
+    if tk_type in (T_CONST, T_STRING_CONST) + _kwd_constant:
+        tk_type, tk = process(tk, tk, tk_type, f, w)
+    elif tk_type == T_IDENTIFIER:
+        tk_type, tk = process(tk, tk, tk_type, f, w)
+        if tk_type == T_SYMBOL and tk == "[":
+            tk_type, tk = process("[", tk, tk_type, f, w)
+            tk_type, tk = compile_exps(tk, tk_type, f, w)
+            tk_type, tk = process("]", tk, tk_type, f, w)
+        else:
+            tk_type, tk = compile_subrt_call(tk, tk_type, f, w)
+    elif tk == "(" and tk_type == T_SYMBOL:
+        tk_type, tk = process("(", tk, tk_type, f, w)
+        tk_type, tk = compile_exps(tk, tk_type, f, w)
+        tk_type, tk = process(")", tk, tk_type, f, w)
+    elif tk in ("-", "~"):
+        tk_type, tk = process(tk, tk, tk_type, f, w)
+        tk_type, tk = compile_term(tk, tk_type, f, w)
+    w.write("</term>\n")
+    return tk_type, tk
+
+
+def compile_exps_list(tk, tk_type, f, w):
+    w.write("<expressionList>")
+    while True:
+        if tk == ")" and tk_type == T_SYMBOL:
+            break
+        tk_type, tk = compile_exps(tk, tk_type, f, w)
+        if tk == "," and tk_type == T_SYMBOL:
+            tk_type, tk = process(",", tk, tk_type, f, w)
+    w.write("</expressionList>")
+    return tk_type, tk
+
+
+def compile_subroutine(tk, tk_type, f, w):
     w.write("<subroutineDec>\n")
-    process(kwd, kwd, tk_type, w)  # function
-    advance_process(f, w)  # void
-    advance_process(f, w)  # main
-    advance_process(f, w, "(")
-
+    tk_type, tk = process(tk, tk, tk_type, f, w)  # function
+    tk_type, tk = process(tk, tk, tk_type, f, w)  # void
+    tk_type, tk = process(tk, tk, tk_type, f, w)  # main
+    tk_type, tk = process("(", tk, tk_type, f, w)
     w.write("<parameterList>\n")
-    tk_type, sym = compile_until(T_SYMBOL, ")", f, w)
+    tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, ")", f, w)
     w.write("</parameterList>\n")
-    process(")", sym, tk_type, w)
-
+    tk_type, tk = process(")", tk, tk_type, f, w)
     w.write("<subroutineBody>\n")
-    advance_process(f, w, "{")
-    tk_type, kwd = compile_until(T_KEYWARD, _kwd_stmts, f, w)
+    tk_type, tk = process("{", tk, tk_type, f, w)
+    tk_type, tk = compile_until(tk, tk_type, T_KEYWARD, _kwd_stmts, f, w)
     w.write("<statements>\n")
-    compile_stmts(kwd, tk_type, f, w)
-    tk_type, sym = compile_until(T_SYMBOL, "}", f, w)
+    tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
     w.write("</statements>\n")
-    process("}", sym, tk_type, w)
+    tk_type, tk = process("}", tk, tk_type, f, w)
     w.write("</subroutineBody>\n")
     w.write("</subroutineDec>\n")
+    return tk_type, tk
 
 
-def compile_class(kwd, tk_type, f, w):
+def compile_class(tk, tk_type, f, w):
     w.write("<class>\n")
-    process("class", kwd, tk_type, w)  # class
-    advance_process(f, w)  # main
-    advance_process(f, w, "{")
-    tk_type, sym = compile_until(T_SYMBOL, "}", f, w)
-    process("}", sym, tk_type, w)
+    tk_type, tk = process("class", tk, tk_type, f, w)  # class
+    tk_type, tk = process(tk, tk, tk_type, f, w)  # main
+    tk_type, tk = process("{", tk, tk_type, f, w)  # {
+    tk_type, tk = compile_token(tk, tk_type, f, w)
+    tk_type, tk = process("}", tk, tk_type, f, w)
     w.write("</class>\n")
+    return tk_type, tk
 
 
-def compile_until(ut_type, until, f, w):
-    tk_type, content = advance(f)
-    if not isinstance(until, tuple):
+def compile_if_stmt(tk, tk_type, f, w):
+    w.write("<ifStatement>\n")
+    tk_type, tk = process("if", tk, tk_type, f, w)
+    tk_type, tk = compile_exps(tk, tk_type, f, w)
+    tk_type, tk = process(")", tk, tk_type, f, w)
+    tk_type, tk = process("{", tk, tk_type, f, w)
+    tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
+    tk_type, tk = process("}", tk, tk_type, f, w)
+    if tk == "else" and tk_type == T_KEYWARD:
+        tk_type, tk = process("else", tk, tk_type, f, w)
+        tk_type, tk = compile_until(tk, tk_type, T_SYMBOL, "}", f, w)
+        tk_type, tk = process("}", tk, tk_type, f, w)
+    w.write("</ifStatement>\n")
+    return tk_type, tk
+
+
+def compile_until(tk, tk_type, ut_type, until, f, w):
+    if isinstance(until, str):
         until = (until,)
-    while content not in until or ut_type != tk_type:
-        _compile(content, tk_type, f, w)
-        tk_type, content = advance(f)
-    return tk_type, content
+    while tk not in until or ut_type != tk_type:
+        tk_type, tk = compile_token(tk, tk_type, f, w)
+    return tk_type, tk
 
 
-def _compile(content, tk_type, f, w):
+def compile_token(tk, tk_type, f, w):
     if tk_type == TAG_EOF:
-        return
+        return None, None
     elif tk_type == T_KEYWARD:
-        compile_kwd(content, tk_type, f, w)
+        return compile_kwd(tk, tk_type, f, w)
     else:
-        write_token(tk_type, content, w)
+        write_token(tk_type, tk, w)
+        return advance(f)
 
 
 def parse(open_file, write_file):
     f = open(open_file, "r")
     g = open(write_file, "w")
-    tk_type, content = advance(f)
-    _compile(content, tk_type, f, g)
+    tk_type, tk = advance(f)
+    compile_token(tk, tk_type, f, g)
 
     f.close()
     g.close()
