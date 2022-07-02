@@ -1,191 +1,14 @@
 import argparse
 import enum
-from pathlib import Path
-
-stack_base_addr = 256
-temp_base_addr = 5
-
-# RAM[0] = stack_base_addr
-# RAM[1] = local_base_addr
-# RAM[2] = argment_base_addr
-# RAM[3] = this_base_addr
-# RAM[4] = that_base_addr
+import pathlib
+from typing import TextIO
 
 
-stack_init = """
-@{base_addr}
-D=A
-@SP
-M=D
-""".strip()
-
-# set value (segment + index) to D
-addr_seg_index = """
-@{segment}
-D=M
-@{index}
-D=D+A
-""".strip()
-
-addr_seg_index_temp = """
-@5
-D=A
-@{index}
-D=D+A
-""".strip()
-
-# retrieve value from segment+index and set this value to D
-retrieve_val = """
-@{segment}
-D={AorM}
-@{index}
-A=D+A
-D=M
-""".strip()
-
-# push value stored in D
-stack_push = """
-@SP
-A=M
-M=D
-@SP
-M=M+1
-""".strip()
-
-# pop and set value to D
-stack_pop = f"""
-@SP
-AM=M-1
-D=M
-""".strip()
-
-# (neg, not) and set value to D
-stack_neg = """
-@SP
-AM=M-1
-MD={op}M
-@SP
-M=M+1
-""".strip()
-
-# (add, sub, and, or) and set value to D
-stack_add = """
-@SP
-AM=M-1
-D=M
-A=A-1
-MD=M{op}D
-""".strip()
-
-# (eq, gt, lt).
-stack_jeq = """
-@R15
-M=-1
-@SP
-AM=M-1
-D=M
-@SP
-AM=M-1
-D=M-D
-@STK_NOT_F{i}
-D;{op}
-@R15
-M=0
-(STK_NOT_F{i})
-@R15
-D=M
-@SP
-A=M
-M=D
-@SP
-M=M+1
-""".strip()
-
-map_seg = {
-    "local": "LCL",
-    "argument": "ARG",
-    "this": "THIS",
-    "that": "THAT",
-}
-
-map_op = {
-    "neg": "-",
-    "not": "!",
-    "add": "+",
-    "sub": "-",
-    "and": "&",
-    "or": "|",
-}
-
-map_cmp = {
-    "eq": "JEQ",
-    "gt": "JGT",
-    "lt": "JLT",
-}
+class CONST(enum.Enum):
+    EOF = 0
 
 
-class CodeWriter:
-    def __init__(self, write_file, static_name) -> None:
-        self.static_name = static_name
-        self.g = open(write_file, "w")
-        self._retcnt = 0
-
-    def close_write(self):
-        self.g.close()
-
-    def write_push(self, segment, index):
-        if segment == "static":
-            s = [f"@{self.static_name}.{index}", "D=M"]
-        elif segment == "pointer":
-            if index == 0:
-                s = ["@THIS", "D=M"]
-            elif index == 1:
-                s = ["@THAT", "D=M"]
-            else:
-                raise Exception
-        elif segment == "constant":
-            s = [f"@{index}", "D=A"]
-        elif segment == "temp":
-            s = [retrieve_val.format(segment=5, AorM="A", index=index)]
-        else:
-            s = [retrieve_val.format(segment=map_seg[segment], AorM="M", index=index)]
-        s.append(stack_push)
-        self.g.write("\n".join(s) + "\n")
-
-    def write_pop(self, segment, index):
-        if segment == "static":
-            s = [f"@{self.static_name}.{index}", "D=A"]
-        elif segment == "pointer":
-            if index == 0:
-                s = ["@THIS", "D=A"]
-            elif index == 1:
-                s = ["@THAT", "D=A"]
-            else:
-                raise Exception
-        elif segment == "temp":
-            s = [addr_seg_index_temp.format(index=index)]
-        else:
-            s = [addr_seg_index.format(segment=map_seg[segment], index=index)]
-        s += ["@R15",
-              "M=D",
-              stack_pop,
-              "@R15",
-              "A=M",
-              "M=D", ]
-        self.g.write("\n".join(s) + "\n")
-
-    def write_arithmetic(self, command):
-        if command in map_op:
-            if command in ("neg", "not"):
-                self.g.write(stack_neg.format(op=map_op[command]) + "\n")
-            else:
-                self.g.write(stack_add.format(op=map_op[command]) + "\n")
-        elif command in map_cmp:
-            self.g.write(stack_jeq.format(i=self._retcnt, op=map_cmp[command]) + "\n")
-            self._retcnt += 1
-
-
-class CommandTypes(enum.Enum):
+class Ctypes(enum.Enum):
     C_ARITHMETIC = enum.auto()
     C_PUSH = enum.auto()
     C_POP = enum.auto()
@@ -198,72 +21,232 @@ class CommandTypes(enum.Enum):
 
 
 class VMParser:
-    def __init__(self) -> None:
-        self.line = None
-        self.command_type = None
+    def __init__(self, f: TextIO):
+        self.f = f
+        self.vm_comm = next(self.f, CONST.EOF)
+        self._next_line = None
+        self._comm_type = None
         self._arg1 = None
         self._arg2 = None
 
-    def parse(self, line):
-        line = line.strip().split()
-        if line[0] == "push":
-            self.command_type = CommandTypes.C_PUSH
-            self._arg1 = line[1]
-            self._arg2 = int(line[2])
-        elif line[0] == "pop":
-            self.command_type = CommandTypes.C_POP
-            self._arg1 = line[1]
-            self._arg2 = int(line[2])
-        elif line[0] in ("sub", "add", "and", "or", "neg", "not", "eq", "gt", "lt"):
-            self.command_type = CommandTypes.C_ARITHMETIC
-            self._arg1 = line[0]
+    def has_more_lines(self):
+        self._next_line = next(self.f, CONST.EOF)
+        return self._next_line != CONST.EOF
+
+    def advance(self):
+        self.vm_comm = self._next_line
+
+    def strip_comment(self):
+        self.vm_comm = self.vm_comm[:self.vm_comm.find("//")].strip()
+
+    def parse(self):
+        lst = self.vm_comm.strip().split()
+        _c_type = lst[0].strip()
+        if _c_type == "push":
+            self._comm_type = Ctypes.C_PUSH
+            self._arg1 = lst[1].strip()
+            self._arg2 = int(lst[2].strip())
+        elif _c_type == "pop":
+            self._comm_type = Ctypes.C_POP
+            self._arg1 = lst[1].strip()
+            self._arg2 = int(lst[2].strip())
+        elif _c_type in ("sub", "add", "and", "or", "neg", "not", "eq", "gt", "lt"):
+            self._comm_type = Ctypes.C_ARITHMETIC
+            self._arg1 = _c_type
+            self._arg2 = None
         else:
-            raise Exception
+            raise Exception(f"unimplemented vm commmand type: {_c_type}.")
+
+    @property
+    def command_type(self) -> Ctypes:
+        return self._comm_type
 
     @property
     def arg1(self):
-        if self.command_type == CommandTypes.C_RETURN:
-            raise Exception
+        if self._comm_type == Ctypes.C_RETURN:
+            raise Exception("should not be called if current command is C_RETURN.")
         return self._arg1
 
     @property
     def arg2(self):
-        if self.command_type not in (
-                CommandTypes.C_PUSH,
-                CommandTypes.C_POP,
-                CommandTypes.C_FUNCTION,
-                CommandTypes.C_CALL,
-        ):
-            raise Exception
+        if self._comm_type not in (Ctypes.C_PUSH, Ctypes.C_POP, Ctypes.C_FUNCTION, Ctypes.C_CALL):
+            raise Exception("should be called only if current command is C_PUSH, C_POP, C_FUNCTION or C_CALL.")
         return self._arg2
+
+    def print_command(self):
+        if self._arg2 is None:
+            print(self.command_type, self.arg1)
+        else:
+            print(self.command_type, self.arg1, self.arg2)
+
+
+map_bi_op = {
+    "add": "+",
+    "sub": "-",
+    "and": "&",
+    "or": "|"
+}
+
+map_si_op = {
+    "neg": "-",
+    "not": "!"
+}
+
+map_cmp_op = {
+    "eq": "JEQ",
+    "gt": "JGT",
+    "lt": "JLT"
+}
+
+map_mem_seg = {
+    "local": "LCL",
+    "argument": "ARG",
+    "this": "THIS",
+    "that": "THAT"
+}
+
+
+def get_or_raise(key, map):
+    v = map.get(key, None)
+    if v is None:
+        raise NotImplementedError(f"not implemented operator: {key}")
+    return v
+
+
+def write_asm(f, lst):
+    f.write("\n".join(lst) + "\n")
+
+
+class CodeWriter:
+    def __init__(self, f, static_name):
+        self.f = f
+        self._jmp_cnt = 0
+        self._static_name = static_name
+
+    def write_arithmetic(self, comm: str):
+        if comm in map_bi_op:
+            op = get_or_raise(comm, map_bi_op)
+            s = ["@SP",
+                 "AM=M-1",
+                 "D=M",
+                 "A=A-1",
+                 f"MD=M{op}D"]
+        elif comm in map_si_op:
+            op = get_or_raise(comm, map_si_op)
+            s = ["@SP",
+                 "AM=M-1",
+                 f"MD={op}M",
+                 "@SP",
+                 "M=M+1"]
+        elif comm in map_cmp_op:
+            op = get_or_raise(comm, map_cmp_op)
+            s = ["@R15",
+                 "M=-1",
+                 "@SP",
+                 "AM=M-1",
+                 "D=M",
+                 "A=A-1",
+                 "D=M-D",
+                 f"@JMP_FALSE{self._jmp_cnt}",
+                 f"D;{op}",
+                 "@R15",
+                 "M=0",
+                 f"(JMP_FALSE{self._jmp_cnt})",
+                 "@R15",
+                 "D=M",
+                 "@SP",
+                 "A=M-1",
+                 "M=D"]
+            self._jmp_cnt += 1
+        else:
+            raise NotImplementedError(comm)
+        write_asm(self.f, s)
+
+    def write_push(self, seg: str, idx: int):
+        if seg == "constant":
+            s = [f"@{idx}", "D=A"]
+        elif seg == "pointer":
+            if idx == 0:
+                s = ["@THIS", "D=M"]
+            elif idx == 1:
+                s = ["@THAT", "D=M"]
+            else:
+                raise NotImplementedError(f"{seg} {idx}")
+        elif seg == "temp":
+            s = ["@5", "D=A", f"@{idx}", "A=D+A", "D=M"]
+        elif seg == "static":
+            s = [f"@{self._static_name}.{idx}", "D=M"]
+        else:
+            mem_seg = get_or_raise(seg, map_mem_seg)
+            s = [f"@{mem_seg}",
+                 "D=M",
+                 f"@{idx}",
+                 "A=D+A",
+                 "D=M"]
+        s += ["@SP",
+              "A=M",
+              "M=D",
+              "@SP",
+              "M=M+1"]
+        write_asm(self.f, s)
+
+    def write_pop(self, seg: str, idx: int):
+        if seg == "pointer":
+            if idx == 0:
+                s = ["@THIS", "D=A"]
+            elif idx == 1:
+                s = ["@THAT", "D=A"]
+            else:
+                raise NotImplementedError(f"{seg} {idx}")
+        elif seg == "temp":
+            s = ["@5", "D=A", f"@{idx}", "D=D+A"]
+        elif seg == "static":
+            s = [f"@{self._static_name}.{idx}", "D=A"]
+        else:
+            mem_seg = get_or_raise(seg, map_mem_seg)
+            s = [f"@{mem_seg}",
+                 "D=M",
+                 f"@{idx}",
+                 "D=D+A"]
+        s += ["@R15",
+              "M=D",
+              "@SP",
+              "AM=M-1",
+              "D=M",
+              "@R15",
+              "A=M",
+              "M=D"]
+        write_asm(self.f, s)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    # parser.add_argument("-f", "--file", type=str)
-    parser.add_argument("file")
+    parser.add_argument('file')
     args = parser.parse_args()
+    file_name = pathlib.Path(args.file)
+    static_name = file_name.parts[-1].split(".")[0]
+    write_fname = pathlib.Path(*file_name.parts[0:-1]).joinpath(static_name + ".asm")
+    # print(static_name, write_fname)
 
-    fname = Path(args.file)
-    static_name = fname.parts[-1].split(".")[0]
-    vm_parser = VMParser()
-    write_fname = fname.parts[-1]
-    write_fname = "/".join(fname.parts[0:-1] + (write_fname.split(".")[0] + ".asm",))
-    code_writer = CodeWriter(write_fname, static_name)
+    with open(file_name, 'r') as f:
+        with open(write_fname, 'w') as g:
+            vm_parser = VMParser(f)
+            code_writer = CodeWriter(g, static_name)
 
-    with open(fname, "r") as f:
-        for line in f.readlines():
-            comment_idx = line.find("//")
-            vm_line = line[:comment_idx].strip()
-            if vm_line == "":
-                continue
-            vm_parser.parse(vm_line)
-            if vm_parser.command_type == CommandTypes.C_PUSH:
-                code_writer.write_push(vm_parser.arg1, vm_parser.arg2)
-            elif vm_parser.command_type == CommandTypes.C_POP:
-                code_writer.write_pop(vm_parser.arg1, vm_parser.arg2)
-            elif vm_parser.command_type == CommandTypes.C_ARITHMETIC:
-                code_writer.write_arithmetic(vm_parser.arg1)
+            while vm_parser.has_more_lines():
+                vm_parser.advance()
+                vm_parser.strip_comment()
+                if vm_parser.vm_comm != "":
+                    vm_parser.parse()
+                    # vm_parser.print_command()
+                    if vm_parser.command_type == Ctypes.C_PUSH:
+                        code_writer.write_push(vm_parser.arg1, vm_parser.arg2)
+                    elif vm_parser.command_type == Ctypes.C_POP:
+                        code_writer.write_pop(vm_parser.arg1, vm_parser.arg2)
+                    elif vm_parser.command_type == Ctypes.C_ARITHMETIC:
+                        code_writer.write_arithmetic(vm_parser.arg1)
+                    else:
+                        raise NotImplementedError
 
 
 if __name__ == "__main__":
