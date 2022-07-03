@@ -1,412 +1,322 @@
 import argparse
+import enum
 import os
-from pathlib import Path
-
-stack_base_addr = 256
-
-# local_base_addr = 1017
-# argment_base_addr = 2
-# this_base_addr = 3
-# that_base_addr = 4
-temp_base_addr = 5
-
-# RAM = [0] * 512
-# RAM[0] = stack_base_addr
-# RAM[1] = local_base_addr
-# RAM[2] = argment_base_addr
-# RAM[3] = this_base_addr
-# RAM[4] = that_base_addr
+import pathlib
+from typing import TextIO
 
 
-init_stack = """
-@{stack_base_addr}
-D=A
-@SP
-M=D
-""".strip()
-
-# set value (segment + index) to D
-addr_seg_index = """
-@{segment}
-D=M
-@{index}
-D=D+A
-""".strip()
-
-addr_seg_index_temp = """
-@5
-D=A
-@{index}
-D=D+A
-""".strip()
-
-# retrieve value from segment+index and set this value to D
-retrieve_val = """
-@{segment}
-D={AorM}
-@{index}
-A=D+A
-D=M
-""".strip()
-
-# push value stored in D
-stack_push = """
-@SP
-AM=M+1
-A=A-1
-M=D
-""".strip()
-
-# pop and set value to D
-stack_pop = f"""
-@SP
-AM=M-1
-D=M
-""".strip()
-
-# pop value and set to *D
-pop_tail = f"""
-@R15
-M=D
-@SP
-AM=M-1
-D=M
-@R15
-A=M
-M=D
-""".strip()
-
-# (neg, not) and set value to D
-stack_neg = """
-@SP
-AM=M-1
-MD={op}M
-@SP
-M=M+1
-""".strip()
-
-# (add, sub, and, or) and set value to D
-stack_add = """
-@SP
-AM=M-1
-D=M
-A=A-1
-MD=M{op}D
-""".strip()
-
-# (eq, gt, lt).
-stack_jeq = """
-@R15
-M=-1
-@SP
-AM=M-1
-D=M
-@SP
-AM=M-1
-D=M-D
-@STK_NOT_F{i}
-D;{op}
-@R15
-M=0
-(STK_NOT_F{i})
-@R15
-D=M
-@SP
-A=M
-M=D
-@SP
-M=M+1
-""".strip()
-
-call_fn = """
-@{return_address}
-D=A
-{stack_push}
-@LCL
-D=M
-{stack_push}
-@ARG
-D=M
-{stack_push}
-@THIS
-D=M
-{stack_push}
-@THAT
-D=M
-{stack_push}
-@SP
-D=M
-@LCL
-M=D
-@5
-D=D-A
-@{n_vars}
-D=D-A
-@ARG
-M=D
-@{function_name}
-0;JMP
-({return_address})
-""".strip()
-
-func_str = """
-({function_name})
-@{n_vars}
-D=A
-({function_name}_init)
-@SP
-AM=M+1
-A=A-1
-M=0
-@{function_name}_init
-D=D-1;JGT
-""".strip()
-
-return_str = """
-@LCL
-D=M
-@{frame}
-M=D
-@5
-A=D-A
-D=M
-@{ret_addr}
-M=D
-@SP
-AM=M-1
-D=M
-@ARG
-A=M
-M=D
-@ARG
-D=M
-@SP
-M=D+1
-@{frame}
-AM=M-1
-D=M
-@THAT
-M=D
-@{frame}
-AM=M-1
-D=M
-@THIS
-M=D
-@{frame}
-AM=M-1
-D=M
-@ARG
-M=D
-@{frame}
-AM=M-1
-D=M
-@LCL
-M=D
-@{ret_addr}
-A=M
-0;JMP
-""".strip()
-
-map_seg = {
-    "local": "LCL",
-    "argument": "ARG",
-    "this": "THIS",
-    "that": "THAT",
-}
-
-map_op = {
-    "neg": "-",
-    "not": "!",
-    "add": "+",
-    "sub": "-",
-    "and": "&",
-    "or": "|",
-}
-
-map_cmp = {
-    "eq": "JEQ",
-    "gt": "JGT",
-    "lt": "JLT",
-}
+class CONST(enum.Enum):
+    EOF = 0
 
 
-class CodeWriter:
-    def __init__(self, write_path) -> None:
-        self.static_name = None
-        self.write_path = write_path
-        self.g = None
-        self._retcnt = 0
-        self.function_name = "SYSTEM"
-
-    def bootstrap(self):
-        self.g.write(init_stack.format(stack_base_addr=stack_base_addr) + "\n")
-        self.write_call("Sys.init", 0)
-
-    def close_g(self):
-        self.g.close()
-
-    def open_g(self):
-        self.g = open(self.write_path, "w")
-
-    def write_function(self, function_name, n_vars):
-        self.function_name = function_name
-        if n_vars == 0:
-            self.g.write(f"({function_name})\n")
-        else:
-            self.g.write(
-                func_str.format(function_name=function_name, n_vars=n_vars) + "\n"
-            )
-
-    def write_call(self, function_name, n_vars):
-        return_address = f"{function_name}$ret.{self._retcnt}"
-        self._retcnt += 1
-        self.g.write(
-            call_fn.format(
-                return_address=return_address,
-                stack_push=stack_push,
-                n_vars=n_vars,
-                function_name=function_name,
-            )
-            + "\n"
-        )
-
-    def write_return(self):
-        self.g.write(return_str.format(frame="R13", ret_addr="R14") + "\n")
-
-    def write_label(self, label):
-        self.g.write(f"({self.function_name}${label})\n")
-
-    def write_goto(self, label):
-        self.g.write(f"@{self.function_name}${label}\n0;JMP\n")
-
-    def write_if_goto(self, label):
-        self.g.write(stack_pop + "\n")
-        self.g.write(f"@{self.function_name}${label}\nD;JNE\n")
-
-    def write_push(self, segment, index):
-        if segment == "static":
-            push_head = f"@{self.static_name}.{index}\nD=M\n"
-        elif segment == "pointer":
-            if index == 0:
-                push_head = "@THIS\nD=M\n"
-            elif index == 1:
-                push_head = "@THAT\nD=M\n"
-            else:
-                raise Exception
-        elif segment == "constant":
-            push_head = f"@{index}\nD=A\n"
-        elif segment == "temp":
-            push_head = retrieve_val.format(segment=5, AorM="A", index=index) + "\n"
-        else:
-            push_head = retrieve_val.format(segment=map_seg[segment], AorM="M", index=index) + "\n"
-        self.g.write(push_head + stack_push + "\n")
-
-    def write_pop(self, segment, index):
-        if segment == "static":
-            pop_head = f"@{self.static_name}.{index}\nD=A\n"
-        elif segment == "pointer":
-            if index == 0:
-                pop_head = "@THIS\nD=A\n"
-            elif index == 1:
-                pop_head = "@THAT\nD=A\n"
-            else:
-                raise Exception
-        elif segment == "temp":
-            if index > 0:
-                pop_head = addr_seg_index_temp.format(index=index) + "\n"
-            else:
-                pop_head = f"@5\nD=A\n"
-        else:
-            if index > 0:
-                pop_head = addr_seg_index.format(segment=map_seg[segment], index=index) + "\n"
-            else:
-                pop_head = f"@{map_seg[segment]}\nD=M\n"
-        self.g.write(pop_head + pop_tail + "\n")
-
-    def write_arithmetic(self, command):
-        if command in map_op:
-            if command in ("neg", "not"):
-                self.g.write(stack_neg.format(op=map_op[command]) + "\n")
-            else:
-                self.g.write(stack_add.format(op=map_op[command]) + "\n")
-        elif command in map_cmp:
-            self.g.write(stack_jeq.format(i=self._retcnt, op=map_cmp[command]) + "\n")
-            self._retcnt += 1
-        else:
-            raise NotImplementedError
+class Ctypes(enum.Enum):
+    C_ARITHMETIC = enum.auto()
+    C_PUSH = enum.auto()
+    C_POP = enum.auto()
+    C_LABEL = enum.auto()
+    C_GOTO = enum.auto()
+    C_IF = enum.auto()
+    C_FUNCTION = enum.auto()
+    C_RETURN = enum.auto()
+    C_CALL = enum.auto()
 
 
-C_LABEL = 0
-C_GOTO = 1
-C_IF = 2
-C_FUNCTION = 3
-C_RETURN = 4
-C_CALL = 5
-C_PUSH = 6
-C_POP = 7
-C_ARITHMETIC = 8
-
-command_types = {
-    "label": C_LABEL,
-    "goto": C_GOTO,
-    "if-goto": C_IF,
-    "function": C_FUNCTION,
-    "call": C_CALL,
-    "return": C_RETURN,
-    "push": C_PUSH,
-    "pop": C_POP,
-    "sub": C_ARITHMETIC,
-    "add": C_ARITHMETIC,
-    "and": C_ARITHMETIC,
-    "or": C_ARITHMETIC,
-    "neg": C_ARITHMETIC,
-    "not": C_ARITHMETIC,
-    "eq": C_ARITHMETIC,
-    "gt": C_ARITHMETIC,
-    "lt": C_ARITHMETIC,
+map_ctypes = {
+    "push": Ctypes.C_PUSH,
+    "pop": Ctypes.C_POP,
+    "function": Ctypes.C_FUNCTION,
+    "call": Ctypes.C_CALL,
+    "label": Ctypes.C_LABEL,
+    "if-goto": Ctypes.C_IF,
+    "goto": Ctypes.C_GOTO,
+    "return": Ctypes.C_RETURN
 }
 
 
 class VMParser:
-    def __init__(self) -> None:
-        self.line = None
-        self.command_type = None
+    def __init__(self, f: TextIO):
+        self.f = f
+        self.vm_comm = next(self.f, CONST.EOF)
+        self._next_line = None
+        self._comm_type = None
         self._arg1 = None
         self._arg2 = None
 
-    def parse(self, line):
-        line = line.strip().split()
-        self.command_type = command_types.get(line[0].strip(), None)
-        if self.command_type is None:
-            raise NotImplementedError(f"{line[0]}")
-        if self.command_type == C_ARITHMETIC:
-            self._arg1 = line[0].strip()
-        if len(line) > 1:
-            self._arg1 = line[1].strip()
-        if len(line) > 2:
-            self._arg2 = int(line[2].strip())
+    def has_more_lines(self):
+        self._next_line = next(self.f, CONST.EOF)
+        return self._next_line != CONST.EOF
+
+    def advance(self):
+        self.vm_comm = self._next_line
+
+    def strip_comment(self):
+        self.vm_comm = self.vm_comm[:self.vm_comm.find("//")].strip()
+
+    def parse(self):
+        lst = self.vm_comm.strip().split()
+        _c_type = lst[0].strip()
+        self._arg1 = None
+        self._arg2 = None
+        if _c_type in ("sub", "add", "and", "or", "neg", "not", "eq", "gt", "lt"):
+            self._comm_type = Ctypes.C_ARITHMETIC
+            self._arg1 = _c_type
+        elif _c_type in ("label", "goto", "if-goto"):
+            self._comm_type = get_or_raise(_c_type, map_ctypes)
+            self._arg1 = lst[1].strip()
+        elif _c_type == "return":
+            self._comm_type = get_or_raise(_c_type, map_ctypes)
+        else:
+            self._comm_type = get_or_raise(_c_type, map_ctypes)
+            self._arg1 = lst[1].strip()
+            self._arg2 = int(lst[2].strip())
+
+    @property
+    def command_type(self) -> Ctypes:
+        return self._comm_type
 
     @property
     def arg1(self):
-        if self.command_type == C_RETURN:
-            raise Exception
+        if self._comm_type == Ctypes.C_RETURN:
+            raise Exception("should not be called if current command is C_RETURN.")
         return self._arg1
 
     @property
     def arg2(self):
-        if self.command_type not in (C_PUSH, C_POP, C_FUNCTION, C_CALL):
-            raise Exception
+        if self._comm_type not in (Ctypes.C_PUSH, Ctypes.C_POP, Ctypes.C_FUNCTION, Ctypes.C_CALL):
+            raise Exception("should be called only if current command is C_PUSH, C_POP, C_FUNCTION or C_CALL.")
         return self._arg2
+
+    def print_command(self):
+        if self._arg2 is None:
+            print(self.command_type, self.arg1)
+        else:
+            print(self.command_type, self.arg1, self.arg2)
+
+
+map_bi_op = {
+    "add": "+",
+    "sub": "-",
+    "and": "&",
+    "or": "|"
+}
+
+map_si_op = {
+    "neg": "-",
+    "not": "!"
+}
+
+map_cmp_op = {
+    "eq": "JEQ",
+    "gt": "JGT",
+    "lt": "JLT"
+}
+
+map_mem_seg = {
+    "local": "LCL",
+    "argument": "ARG",
+    "this": "THIS",
+    "that": "THAT"
+}
+
+STACK_BASE_ADDR = 256
+ASM_STACK_PUSH = ["@SP",
+                  "AM=M+1",
+                  "A=A-1",
+                  "M=D"]
+
+ASM_STACK_POP_D = ["@R15",
+                   "M=D",
+                   "@SP",
+                   "AM=M-1",
+                   "D=M",
+                   "@R15",
+                   "A=M",
+                   "M=D"]
+
+ASM_STACK_POP = ["@SP",
+                 "AM=M-1",
+                 "D=M"]
+
+
+def get_or_raise(key, map):
+    v = map.get(key, None)
+    if v is None:
+        raise NotImplementedError(f"not implemented operator: {key}")
+    return v
+
+
+def write_asm(f, lst):
+    f.write("\n".join(lst) + "\n")
+
+
+class CodeWriter:
+    def __init__(self, f):
+        self.f = f
+        self._jmp_cnt = 0
+        self.file_name = None
+        self.func_name = "SYSTEM"
+
+    def set_filename(self, file_name):
+        self.file_name = file_name
+
+    def bootstrap(self):
+        s = [f"@{STACK_BASE_ADDR}",
+             "D=A",
+             "@SP",
+             "M=D"]
+        write_asm(self.f, s)
+        self.write_call("Sys.init", 0)
+
+    def write_call(self, func_name, n_args):
+        return_addr = f"{func_name}$ret.{self._jmp_cnt}"
+        s = [f"@{return_addr}", "D=A"] + ASM_STACK_PUSH  # push returnAddress
+        s += ["@LCL", "D=M"] + ASM_STACK_PUSH  # push LCL
+        s += ["@ARG", "D=M"] + ASM_STACK_PUSH  # push ARG
+        s += ["@THIS", "D=M"] + ASM_STACK_PUSH  # push THIS
+        s += ["@THAT", "D=M"] + ASM_STACK_PUSH  # push THAT
+        s += ["@SP", "D=M", "@LCL", "M=D"]  # LCL = SP
+        s += ["@5", "D=D-A", f"@{n_args}", "D=D-A", "@ARG", "M=D"]  # ARG = SP - 5 - nArgs
+        s += [f"@{func_name}", "0;JMP"]  # goto f
+        s += [f"({return_addr})"]  # (returnAddress)
+        write_asm(self.f, s)
+        self._jmp_cnt += 1
+
+    def write_function(self, func_name, n_vars):
+        self.func_name = func_name
+        s = [f"({func_name})"]
+        if n_vars > 0:
+            s += [f"@{n_vars}",
+                  "D=A",
+                  f"({func_name}_rep)",
+                  "@SP",
+                  "AM=M+1",
+                  "A=A-1",
+                  "M=0",
+                  f"@{func_name}_rep",
+                  "D=D-1;JGT"]
+        write_asm(self.f, s)
+
+    def write_return(self):
+        # frame = "R13", ret_addr = "R14"
+        s = ["@LCL", "D=M", "@R13", "M=D",  # frame = LCL
+             "@5", "A=D-A", "D=M", "@R14", "M=D",  # retAddr = *(frame - 5)
+             "@SP", "AM=M-1", "D=M", "@ARG", "A=M", "M=D",  # *ARG = pop()
+             "@ARG", "D=M", "@SP", "M=D+1",  # SP = ARG + 1
+             "@R13", "AM=M-1", "D=M", "@THAT", "M=D",  # THAT = *(frame - 1)
+             "@R13", "AM=M-1", "D=M", "@THIS", "M=D",  # THIS = *(frame - 2)
+             "@R13", "AM=M-1", "D=M", "@ARG", "M=D",  # ARG = *(frame - 3)
+             "@R13", "AM=M-1", "D=M", "@LCL", "M=D",  # LCL = *(frame - 4)
+             "@R14", "A=M", "0;JMP"]
+        write_asm(self.f, s)
+
+    def write_arithmetic(self, comm: str):
+        if comm in map_bi_op:
+            op = get_or_raise(comm, map_bi_op)
+            s = ["@SP",
+                 "AM=M-1",
+                 "D=M",
+                 "A=A-1",
+                 f"MD=M{op}D"]
+        elif comm in map_si_op:
+            op = get_or_raise(comm, map_si_op)
+            s = ["@SP",
+                 "AM=M-1",
+                 f"MD={op}M",
+                 "@SP",
+                 "M=M+1"]
+        elif comm in map_cmp_op:
+            op = get_or_raise(comm, map_cmp_op)
+            s = ["@R15",
+                 "M=-1",
+                 "@SP",
+                 "AM=M-1",
+                 "D=M",
+                 "@SP",
+                 "AM=M-1",
+                 "D=M-D",
+                 f"@JMP_FALSE{self._jmp_cnt}",
+                 f"D;{op}",
+                 "@R15",
+                 "M=0",
+                 f"(JMP_FALSE{self._jmp_cnt})",
+                 "@R15",
+                 "D=M",
+                 "@SP",
+                 "A=M",
+                 "M=D",
+                 "@SP",
+                 "M=M+1"]
+            self._jmp_cnt += 1
+        else:
+            raise NotImplementedError(comm)
+        write_asm(self.f, s)
+
+    def write_push(self, seg: str, idx: int):
+        if seg == "constant":
+            s = [f"@{idx}", "D=A"]
+        elif seg == "pointer":
+            if idx == 0:
+                s = ["@THIS", "D=M"]
+            elif idx == 1:
+                s = ["@THAT", "D=M"]
+            else:
+                raise NotImplementedError(f"{seg} {idx}")
+        elif seg == "temp":
+            s = ["@5", "D=A", f"@{idx}", "A=D+A", "D=M"]
+        elif seg == "static":
+            s = [f"@{self.file_name}.{idx}", "D=M"]
+        else:
+            mem_seg = get_or_raise(seg, map_mem_seg)
+            s = [f"@{mem_seg}",
+                 "D=M",
+                 f"@{idx}",
+                 "A=D+A",
+                 "D=M"]
+        s += ASM_STACK_PUSH
+        write_asm(self.f, s)
+
+    def write_pop(self, seg: str, idx: int):
+        if seg == "pointer":
+            if idx == 0:
+                s = ["@THIS", "D=A"]
+            elif idx == 1:
+                s = ["@THAT", "D=A"]
+            else:
+                raise NotImplementedError(f"{seg} {idx}")
+        elif seg == "temp":
+            s = ["@5", "D=A", f"@{idx}", "D=D+A"]
+        elif seg == "static":
+            s = [f"@{self.file_name}.{idx}", "D=A"]
+        else:
+            mem_seg = get_or_raise(seg, map_mem_seg)
+            s = [f"@{mem_seg}",
+                 "D=M",
+                 f"@{idx}",
+                 "D=D+A"]
+        s += ASM_STACK_POP_D
+        write_asm(self.f, s)
+
+    def write_label(self, label: str):
+        s = [f"({self.func_name}${label})"]
+        write_asm(self.f, s)
+
+    def write_goto(self, label: str):
+        s = [f"@{self.func_name}${label}", "0;JMP"]
+        write_asm(self.f, s)
+
+    def write_if_goto(self, label: str):
+        s = ASM_STACK_POP + [f"@{self.func_name}${label}", "D;JNE"]
+        write_asm(self.f, s)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("file_dir")
+    parser.add_argument('file_dir')
     args = parser.parse_args()
-    file_dir = Path(args.file_dir)
+    file_dir = pathlib.Path(args.file_dir)
 
     lst_vm = []
-    if Path.is_dir(file_dir):
+    if pathlib.Path.is_dir(file_dir):
         for p in file_dir.glob("*.vm"):
             if p.parts[-1] == "Sys.vm":
                 lst_vm = [p] + lst_vm
@@ -424,47 +334,45 @@ def main():
         raise NotImplementedError
 
     print("vm files ", lst_vm)
-    print("output: " + asm_out_path)
+    print("output: ", asm_out_path, asm_out_name)
 
-    vm_parser = VMParser()
-    code_writer = CodeWriter(asm_out_path)
-    code_writer.open_g()
-    if do_bootstrap:
-        code_writer.bootstrap()
+    with open(asm_out_path, 'w') as g:
+        code_writer = CodeWriter(g)
 
-    for fname in lst_vm:
-        print(f"translating: {fname}")
-        static_name = fname.parts[-1].split(".")[0]
-        code_writer.static_name = static_name
-        with open(fname, "r") as f:
-            for line in f.readlines():
-                comment_idx = line.find("//")
-                vm_line = line[:comment_idx].strip()
-                if vm_line == "":
-                    continue
-                vm_parser.parse(vm_line)
-                if vm_parser.command_type == C_PUSH:
-                    code_writer.write_push(vm_parser.arg1, vm_parser.arg2)
-                elif vm_parser.command_type == C_POP:
-                    code_writer.write_pop(vm_parser.arg1, vm_parser.arg2)
-                elif vm_parser.command_type == C_ARITHMETIC:
-                    code_writer.write_arithmetic(vm_parser.arg1)
-                elif vm_parser.command_type == C_LABEL:
-                    code_writer.write_label(vm_parser.arg1)
-                elif vm_parser.command_type == C_GOTO:
-                    code_writer.write_goto(vm_parser.arg1)
-                elif vm_parser.command_type == C_IF:
-                    code_writer.write_if_goto(vm_parser.arg1)
-                elif vm_parser.command_type == C_FUNCTION:
-                    code_writer.write_function(vm_parser.arg1, vm_parser.arg2)
-                elif vm_parser.command_type == C_CALL:
-                    code_writer.write_call(vm_parser.arg1, vm_parser.arg2)
-                elif vm_parser.command_type == C_RETURN:
-                    code_writer.write_return()
-                else:
-                    raise Exception
+        if do_bootstrap:
+            code_writer.bootstrap()
 
-    code_writer.close_g()
+        for fname in lst_vm:
+            with open(fname, 'r')as f:
+                vm_parser = VMParser(f)
+                code_writer.set_filename(fname.parts[-1].split(".")[0])
+
+                while vm_parser.has_more_lines():
+                    vm_parser.advance()
+                    vm_parser.strip_comment()
+                    if vm_parser.vm_comm:
+                        vm_parser.parse()
+                        # vm_parser.print_command()
+                        if vm_parser.command_type == Ctypes.C_PUSH:
+                            code_writer.write_push(vm_parser.arg1, vm_parser.arg2)
+                        elif vm_parser.command_type == Ctypes.C_POP:
+                            code_writer.write_pop(vm_parser.arg1, vm_parser.arg2)
+                        elif vm_parser.command_type == Ctypes.C_ARITHMETIC:
+                            code_writer.write_arithmetic(vm_parser.arg1)
+                        elif vm_parser.command_type == Ctypes.C_RETURN:
+                            code_writer.write_return()
+                        elif vm_parser.command_type == Ctypes.C_CALL:
+                            code_writer.write_call(vm_parser.arg1, vm_parser.arg2)
+                        elif vm_parser.command_type == Ctypes.C_FUNCTION:
+                            code_writer.write_function(vm_parser.arg1, vm_parser.arg2)
+                        elif vm_parser.command_type == Ctypes.C_GOTO:
+                            code_writer.write_goto(vm_parser.arg1)
+                        elif vm_parser.command_type == Ctypes.C_IF:
+                            code_writer.write_if_goto(vm_parser.arg1)
+                        elif vm_parser.command_type == Ctypes.C_LABEL:
+                            code_writer.write_label(vm_parser.arg1)
+                        else:
+                            raise NotImplementedError
 
 
 if __name__ == "__main__":
