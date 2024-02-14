@@ -1,0 +1,147 @@
+class PigGame {
+    field int player_score;
+    field int pig_score;
+    field int max_score_;
+    field Random rng;
+
+    constructor PigGame new(int max_score){
+        let max_score_ = max_score;
+        return this;
+    }
+
+    method void dispose(){
+        do rng.dispose();
+        do Memory.deAlloc(this);
+        return;
+    }
+
+    method void init(){
+        var int seed_val;
+        let player_score = 0;
+        let pig_score = 0;
+        
+        let seed_val = Keyboard.readInt("Enter random seed: ");
+        let rng = Random.new(seed_val);
+
+        do Output.println();        
+        do Output.printString("Pig Game Start.");
+        do Output.println();
+        do printCurrentScores();
+        
+        return;
+    }
+
+    method void printCurrentScores(){
+        do Output.moveCursor(0,0);
+        do Screen.clearScreen();
+        do Output.printString("Player score: ");
+        do Output.printInt(player_score);
+        do Output.printString(", Pig score: ");
+        do Output.printInt(pig_score);
+        do Output.println();
+
+        return;
+    }
+
+    method int player_turn(){
+        var int acc, dice_val;
+        var char kbd_in;
+        let acc = 0;
+        while((acc + player_score) < max_score_){
+            do printCurrentScores();
+            do Output.printString("This turn total: ");
+            do Output.printInt(acc);
+            do Output.println();
+            do Output.printString("Choose r(Roll), h(Hold): ");
+            let kbd_in = Keyboard.readChar();
+            do Output.println();
+
+            // for some reason only uppercase works...
+            if ((kbd_in = 72) | (kbd_in = 104)){  // h
+                // turn total is added to the score, and it becomes the next player's turn.
+                do Output.printString("Player hold. Pig's turn.");
+                do Output.println();
+                return acc;
+            }
+
+            if ((kbd_in = 82) | (kbd_in = 114)){  // r
+                let dice_val = rng.dice();
+                if (dice_val = 1){
+                    // score nothing and it becomes the next player's turn.
+                    do Output.printString("Player got 1. Pig's turn.");
+                    do Output.println();
+                    return 0;
+                }
+                // added to turn total and the player's turn continues.
+                do Output.printString("Player got: ");
+                do Output.printInt(dice_val);
+                do Output.println();
+                let acc = acc + dice_val;
+            } else {
+                do Output.printString("Wrong Input: ");
+                do Output.printChar(kbd_in);
+                do Output.println();
+            }            
+        }
+        return acc;
+    }
+
+    method int pig_turn(){
+        var int acc, dice_val;
+        var int roll_or_hold;
+        let acc = 0;
+        while(((acc + pig_score) < max_score_) & (acc < 20)){
+            do printCurrentScores();
+            do Output.printString("This turn Pig total: ");
+            do Output.printInt(acc);
+            do Output.println();
+            do Output.printString("Press any key to proceed.");
+            do Keyboard.readChar();
+
+            // determine hold or roll;
+            let roll_or_hold = rng.rand();
+            let roll_or_hold = roll_or_hold - Math.divide(roll_or_hold, 6) * 6;
+            if (~(acc = 0) & roll_or_hold = 1){ // hold
+                do Output.printString("Pig hold. Player's turn.");
+                return acc;
+            }
+
+            do Output.printString("Pig rolls.");
+            let dice_val = rng.dice();
+            if (dice_val = 1){
+                do Output.printString("Pig got 1. Player's turn.");
+                do Output.println();
+                return 0;
+            }
+            do Output.printString("Pig got: ");
+            do Output.printInt(dice_val);
+            do Output.println();
+            let acc = acc + dice_val;
+        }
+        return acc;
+    }
+
+    method void run(){
+        var boolean game_on;
+        do init();
+        let game_on = true;
+        while (game_on){
+            let player_score = player_score + player_turn();
+            if (~(player_score < max_score_)){
+                do Output.printString("Player win! Total score: ");
+                do Output.printInt(player_score);
+                let game_on = false;
+            }
+            if (game_on){
+                let pig_score = pig_score + pig_turn();
+                if (~(pig_score < max_score_)){
+                    do Output.printString("Pig win! Total score: ");
+                    do Output.printInt(pig_score);
+                    let game_on = false;
+                }
+            }
+        }
+        return;
+    }
+
+}

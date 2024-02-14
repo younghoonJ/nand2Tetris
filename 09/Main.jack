@@ -1,0 +1,17 @@
+class Main{
+
+function void main(){
+    var PigGame game;
+    var int max_score;
+    let max_score = Keyboard.readInt("Enter max score: ");
+    if (max_score = 0){
+        do Output.printString("Got max_score=0. Set to default value 100.");
+        let max_score = 100;
+    }
+    do Output.println();
+    let game = PigGame.new(max_score);
+    do game.run();
+    do game.dispose();
+    return;
+    }
+}

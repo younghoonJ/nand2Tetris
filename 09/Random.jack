@@ -1,0 +1,31 @@
+class Random{
+    field int seed_;
+
+    constructor Random new(int seed){
+        let seed_ = seed;
+        return this;
+    }
+
+    method void dispose(){
+        do Memory.deAlloc(this);
+        return;
+    }
+
+    method int rand(){
+        let seed_ = ((seed_ * 773)  + 17);
+
+        // mod 32767
+        if (seed_ < 0){
+            // to avoid `In subroutine rand: Integer constant too big`
+            let seed_ = (seed_ + 32767) + 1;
+        }
+        return seed_;
+    }
+
+    method int dice(){
+        var int r;
+        let r = rand();
+        let r = r - (6 * Math.divide(r, 6)); // 0, 1, 2, 3, 4, 5
+        return r + 1;
+    }
+}
